@@ -81,101 +81,107 @@ stop_pids() {  # $@ = csv pid-lists; TERM, then KILL survivors
 }
 
 tui() {
-  # Talk to the controlling terminal directly, so the TUI still works when
-  # std{in,out} are piped/redirected. Only bail if there's no terminal at all.
-  if { : </dev/tty; } 2>/dev/null; then
-    exec </dev/tty >/dev/tty
-  elif [[ ! -t 0 || ! -t 1 ]]; then
-    print -u2 "dev-servers -t needs a terminal — run it in a terminal window, not piped or via a wrapper."
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    print -u2 "dev-servers -t needs an interactive terminal — run it in a terminal window."
     return 1
   fi
 
   # All variables declared once — re-declaring a set var with `local` echoes it.
-  local interval=${DEV_SERVERS_INTERVAL:-2} saved k seq row rpid mem disp mark point line ans
+  local interval=${DEV_SERVERS_INTERVAL:-2} saved k seq row rpid mem disp mark point line ans cols w
   local -a rows targets
   local -A selected
-  integer cursor=1 r cols last=-1000000 winch=1
+  integer cursor=1 r last=-1000000 winch=1 dirty=1
 
-  saved=$(stty -g </dev/tty 2>/dev/null)
-  stty -echo -icanon </dev/tty 2>/dev/null
+  saved=$(stty -g 2>/dev/null)
+  stty -echo -icanon 2>/dev/null
   print -n '\e[?1049h\e[?25l\e[?7l'                  # alt screen, hide cursor, no wrap
-  trap 'stty "$saved" </dev/tty 2>/dev/null; print -n "\e[?7h\e[?25h\e[?1049l"' EXIT INT TERM
-  trap 'winch=1' WINCH                               # redraw immediately on resize
+  trap 'stty "$saved" 2>/dev/null; print -n "\e[?7h\e[?25h\e[?1049l"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'winch=1' WINCH                               # redraw on resize
 
   while true; do
-    # Collect only on the timer or after a refresh/kill — never per keystroke,
-    # so navigation stays snappy while lsof/git/ps run at most once per interval.
+    # Collect only on the timer or after a refresh/kill — never per keystroke.
     if (( SECONDS - last >= interval )); then
-      rows=("${(@f)$(collect)}"); [[ -z $rows[1] ]] && rows=(); last=$SECONDS
+      rows=("${(@f)$(collect)}"); [[ -z $rows[1] ]] && rows=(); last=$SECONDS; dirty=1
     fi
+    (( winch )) && { winch=0; dirty=1; print -n '\e[2J'; }
     (( cursor > ${#rows} )) && cursor=${#rows}
     (( cursor < 1 )) && cursor=1
-    cols=$(stty size </dev/tty 2>/dev/null); cols=${cols##* }   # current width via ioctl
-    [[ -z $cols || $cols -lt 20 ]] && cols=80
-    (( winch )) && { winch=0; print -n '\e[2J'; }   # full clear after a resize
 
-    print -n '\e[H'                                 # home (no full clear = less flicker)
-    printf '\e[1m dev-servers\e[0m \e[2m(%ss)\e[0m\e[K\n\e[K\n' "$interval"
-    if (( ${#rows} == 0 )); then
-      printf '  no dev servers running\e[K\n'
-    else
-      for r in {1..${#rows}}; do
-        row=$rows[$r]
-        rpid=${row%%|*}; row=${row#*|}
-        mem=${row%%|*};  disp=${${row#*|}%|*}
-        mark='[ ]'; [[ -n ${selected[$rpid]} ]] && mark='[x]'
-        point='  '; (( r == cursor )) && point='> '
-        line=$(printf '%s%s %6sMB  %s' "$point" "$mark" "$mem" "$disp")
-        line=${line[1,$cols]}                       # truncate so nothing wraps
-        if (( r == cursor )); then printf "\e[7m%-${cols}s\e[0m\n" "$line"
-        else                       printf '%s\e[K\n' "$line"; fi
-      done
+    if (( dirty )); then                            # redraw only when something changed
+      dirty=0
+      cols=$(stty size 2>/dev/null)
+      cols=${cols##* }                             # last token = column count
+      [[ $cols == <-> ]] || cols=80                # integer glob: fall back if junk
+      (( cols < 20 )) && cols=80
+      w=$(( cols - 1 ))                            # leave the last column untouched
+      print -n '\e[H'
+      printf '\e[1m dev-servers\e[0m \e[2m(%ss)\e[0m\e[K\n\e[K\n' "$interval"
+      if (( ${#rows} == 0 )); then
+        printf '  no dev servers running\e[K\n'
+      else
+        for r in {1..${#rows}}; do
+          row=$rows[$r]
+          rpid=${row%%|*}; row=${row#*|}
+          mem=${row%%|*};  disp=${${row#*|}%|*}
+          mark='[ ]'; [[ -n ${selected[$rpid]} ]] && mark='[x]'
+          point='  '; (( r == cursor )) && point='> '
+          line=$(printf '%s%s %6sMB  %s' "$point" "$mark" "$mem" "$disp")
+          line=${line[1,$w]}                        # truncate so nothing wraps
+          if (( r == cursor )); then printf '\e[7m%s\e[0m\e[K\n' "$line"
+          else                       printf '%s\e[K\n' "$line"; fi
+        done
+      fi
+      printf '\e[K\n'
+      line=' ↑/↓ move · space select · a all · n none · x stop · r refresh · q quit'
+      printf '\e[2m%s\e[0m\e[K\n' "${line[1,$w]}"
+      print -n '\e[J'
     fi
-    printf '\e[K\n'
-    line=' ↑/↓ move · space select · a all · n none · x stop · r refresh · q quit'
-    printf '\e[2m%s\e[0m\e[K\n' "${line[1,$cols]}"
-    print -n '\e[J'                                 # clear anything below
 
-    if read -t 0.5 -k 1 k; then                     # poll fast; collect() is gated above
-      case $k in
-        $'\e')                                      # escape / arrow
-          if read -t 0.3 -k 2 seq; then
-            case $seq in
-              '[A') (( cursor-- ));;
-              '[B') (( cursor++ ));;
-            esac
-          else break; fi                            # bare ESC quits
-          ;;
-        k|K) (( cursor-- ));;
-        j|J) (( cursor++ ));;
-        ' ')
-          (( ${#rows} )) || continue
+    read -t 1 -k 1 k || continue                    # 1s poll; keypress returns instantly
+    dirty=1
+    case $k in
+      $'\e')                                        # escape / arrow
+        if read -t 1 -k 2 seq; then
+          case $seq in
+            '[A') (( cursor-- ));;
+            '[B') (( cursor++ ));;
+          esac
+        else break; fi                              # bare ESC quits
+        ;;
+      k|K) (( cursor-- ));;
+      j|J) (( cursor++ ));;
+      ' ')
+        if (( ${#rows} )); then
           rpid=${rows[$cursor]%%|*}
           [[ -n ${selected[$rpid]} ]] && unset "selected[$rpid]" || selected[$rpid]=1
-          ;;
-        a|A) for row in $rows; do selected[${row%%|*}]=1; done;;
-        n|N) selected=();;
-        r|R) last=-1000000;;                        # force refresh next loop
-        x|X|$'\n'|$'\r')
-          (( ${#rows} )) || continue
+        fi
+        ;;
+      a|A) for row in $rows; do selected[${row%%|*}]=1; done;;
+      n|N) selected=();;
+      r|R) last=-1000000;;                          # force refresh next loop
+      x|X|$'\n'|$'\r')
+        if (( ${#rows} )); then
           targets=()
           if (( ${#selected} )); then
             for row in $rows; do [[ -n ${selected[${row%%|*}]} ]] && targets+=("${row##*|}"); done
           else
             targets+=("${rows[$cursor]##*|}")
           fi
-          (( ${#targets} )) || continue
-          printf '\e[K\n \e[1mForce-stop %d server(s)? [y/N]\e[0m ' ${#targets}
-          read -k 1 ans
-          if [[ $ans == (y|Y) ]]; then stop_pids "${targets[@]}"; selected=(); fi
-          last=-1000000                             # refresh after kill/confirm
-          ;;
-        q|Q) break;;
-      esac
-    fi
+          if (( ${#targets} )); then
+            printf '\e[K\n \e[1mForce-stop %d server(s)? [y/N]\e[0m ' ${#targets}
+            read -k 1 ans
+            [[ $ans == (y|Y) ]] && { stop_pids "${targets[@]}"; selected=(); }
+            last=-1000000                           # refresh after kill/confirm
+          fi
+        fi
+        ;;
+      q|Q) break;;
+    esac
   done
 
-  stty "$saved" </dev/tty 2>/dev/null; print -n '\e[?7h\e[?25h\e[?1049l'; trap - EXIT INT TERM
+  stty "$saved" 2>/dev/null; print -n '\e[?7h\e[?25h\e[?1049l'; trap - EXIT INT TERM WINCH
 }
 
 case ${1:-} in

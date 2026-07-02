@@ -94,21 +94,25 @@ tui() {
   local interval=${DEV_SERVERS_INTERVAL:-2} saved k seq row rpid mem disp mark point line ans
   local -a rows targets
   local -A selected
-  integer cursor=1 r
+  integer cursor=1 r cols last=-1000000
 
-  saved=$(stty -g)
-  stty -echo -icanon
-  print -n '\e[?1049h\e[?25l'                       # alt screen, hide cursor
-  trap 'stty "$saved"; print -n "\e[?25h\e[?1049l"' EXIT INT TERM
+  saved=$(stty -g </dev/tty 2>/dev/null)
+  stty -echo -icanon </dev/tty 2>/dev/null
+  print -n '\e[?1049h\e[?25l\e[?7l'                  # alt screen, hide cursor, no wrap
+  trap 'stty "$saved" </dev/tty 2>/dev/null; print -n "\e[?7h\e[?25h\e[?1049l"' EXIT INT TERM
 
   while true; do
-    rows=("${(@f)$(collect)}")
-    [[ -z $rows[1] ]] && rows=()
+    # Collect only on the timer or after a refresh/kill — never per keystroke,
+    # so navigation stays snappy while lsof/git/ps run at most once per interval.
+    if (( SECONDS - last >= interval )); then
+      rows=("${(@f)$(collect)}"); [[ -z $rows[1] ]] && rows=(); last=$SECONDS
+    fi
     (( cursor > ${#rows} )) && cursor=${#rows}
     (( cursor < 1 )) && cursor=1
+    cols=$(tput cols 2>/dev/null); [[ -z $cols || $cols -lt 20 ]] && cols=80
 
     print -n '\e[H'                                 # home (no full clear = less flicker)
-    printf '\e[1m dev-servers\e[0m  \e[2m(%ss refresh)\e[0m\e[K\n\e[K\n' "$interval"
+    printf '\e[1m dev-servers\e[0m \e[2m(%ss)\e[0m\e[K\n\e[K\n' "$interval"
     if (( ${#rows} == 0 )); then
       printf '  no dev servers running\e[K\n'
     else
@@ -119,17 +123,20 @@ tui() {
         mark='[ ]'; [[ -n ${selected[$rpid]} ]] && mark='[x]'
         point='  '; (( r == cursor )) && point='> '
         line=$(printf '%s%s %6sMB  %s' "$point" "$mark" "$mem" "$disp")
-        if (( r == cursor )); then printf '\e[7m%s\e[0m\e[K\n' "$line"
+        line=${line[1,$cols]}                       # truncate so nothing wraps
+        if (( r == cursor )); then printf "\e[7m%-${cols}s\e[0m\n" "$line"
         else                       printf '%s\e[K\n' "$line"; fi
       done
     fi
-    printf '\e[K\n \e[2m↑/↓ move · space select · a all · n none · x stop · r refresh · q quit\e[0m\e[K\n'
+    printf '\e[K\n'
+    line=' ↑/↓ move · space select · a all · n none · x stop · r refresh · q quit'
+    printf '\e[2m%s\e[0m\e[K\n' "${line[1,$cols]}"
     print -n '\e[J'                                 # clear anything below
 
     if read -t $interval -k 1 k; then
       case $k in
         $'\e')                                      # escape / arrow
-          if read -t 1 -k 2 seq; then
+          if read -t 0.3 -k 2 seq; then
             case $seq in
               '[A') (( cursor-- ));;
               '[B') (( cursor++ ));;
@@ -145,7 +152,7 @@ tui() {
           ;;
         a|A) for row in $rows; do selected[${row%%|*}]=1; done;;
         n|N) selected=();;
-        r|R) ;;                                     # loop re-collects
+        r|R) last=-1000000;;                        # force refresh next loop
         x|X|$'\n'|$'\r')
           (( ${#rows} )) || continue
           targets=()
@@ -158,13 +165,14 @@ tui() {
           printf '\e[K\n \e[1mForce-stop %d server(s)? [y/N]\e[0m ' ${#targets}
           read -k 1 ans
           if [[ $ans == (y|Y) ]]; then stop_pids "${targets[@]}"; selected=(); fi
+          last=-1000000                             # refresh after kill/confirm
           ;;
         q|Q) break;;
       esac
     fi
   done
 
-  stty "$saved"; print -n '\e[?25h\e[?1049l'; trap - EXIT INT TERM
+  stty "$saved" </dev/tty 2>/dev/null; print -n '\e[?7h\e[?25h\e[?1049l'; trap - EXIT INT TERM
 }
 
 case ${1:-} in

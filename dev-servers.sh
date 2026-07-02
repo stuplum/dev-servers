@@ -81,7 +81,14 @@ stop_pids() {  # $@ = csv pid-lists; TERM, then KILL survivors
 }
 
 tui() {
-  if [[ ! -t 0 || ! -t 1 ]]; then print -u2 "TUI needs an interactive terminal."; return 1; fi
+  # Talk to the controlling terminal directly, so the TUI still works when
+  # std{in,out} are piped/redirected. Only bail if there's no terminal at all.
+  if { : </dev/tty; } 2>/dev/null; then
+    exec </dev/tty >/dev/tty
+  elif [[ ! -t 0 || ! -t 1 ]]; then
+    print -u2 "dev-servers -t needs a terminal — run it in a terminal window, not piped or via a wrapper."
+    return 1
+  fi
 
   # All variables declared once — re-declaring a set var with `local` echoes it.
   local interval=${DEV_SERVERS_INTERVAL:-2} saved k seq row rpid mem disp mark point line ans

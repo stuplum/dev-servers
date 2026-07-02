@@ -10,7 +10,12 @@
 # worktree. System daemons, Homebrew services (/opt), Docker and editor helpers
 # fall outside that net and are ignored.
 #
-# Override the search root with DEV_ROOT (default: $HOME).
+# Usage:
+#   dev-servers            list running dev servers
+#   dev-servers -t         live TUI: navigate, multi-select, force-stop
+#
+# Env: DEV_ROOT (search root, default $HOME), DEV_SERVERS_INTERVAL (TUI refresh
+# seconds, default 2).
 
 DEV_ROOT=${DEV_ROOT:-$HOME}
 
@@ -35,7 +40,9 @@ repo_label() {  # $1 = dir; echo "repo" or "repo/worktree", else fail
   fi
 }
 
-out=$(
+# One row per server, sorted by memory desc. Fields (|-separated):
+#   rootpid | memMB | ":ports  label  (cmd)" | subtree-pids(csv)
+collect() {
   lsof -nP -iTCP -sTCP:LISTEN -a -u "$USER" 2>/dev/null \
     | awk 'NR>1 {print $2}' | sort -un \
     | while read -r pid; do
@@ -54,14 +61,107 @@ out=$(
         pids=$(subtree "$pid" | tr ' ' '\n' | grep . | paste -sd, -)
         memMB=$(ps -o rss= -p "$pids" 2>/dev/null | awk '{m+=$1} END{printf "%d", m/1024}')
 
-        print -r -- "${memMB:-0}|:$ports  $label  ($cmd)"
+        print -r -- "$pid|${memMB:-0}|:$ports  $label  ($cmd)|$pids"
       done \
-    | sort -t'|' -k1,1 -rn \
-    | awk -F'|' '{printf "%6sMB  %s\n", $1, $2}'
-)
+    | sort -t'|' -k2,2 -rn
+}
 
-if [[ -n $out ]]; then
-  print -r -- "$out"
-else
-  print -- "No dev servers running"
-fi
+list() {
+  local raw; raw=$(collect)
+  if [[ -z $raw ]]; then print -- "No dev servers running"; return; fi
+  print -r -- "$raw" | awk -F'|' '{printf "%6sMB  %s\n", $2, $3}'
+}
+
+stop_pids() {  # $@ = csv pid-lists; TERM, then KILL survivors
+  local csv p; local -a all
+  for csv in "$@"; do all+=(${(s:,:)csv}); done
+  kill -TERM $all 2>/dev/null
+  sleep 1
+  for p in $all; do kill -0 $p 2>/dev/null && kill -KILL $p 2>/dev/null; done
+}
+
+tui() {
+  if [[ ! -t 0 || ! -t 1 ]]; then print -u2 "TUI needs an interactive terminal."; return 1; fi
+
+  # All variables declared once — re-declaring a set var with `local` echoes it.
+  local interval=${DEV_SERVERS_INTERVAL:-2} saved k seq row rpid mem disp mark point line ans
+  local -a rows targets
+  local -A selected
+  integer cursor=1 r
+
+  saved=$(stty -g)
+  stty -echo -icanon
+  print -n '\e[?1049h\e[?25l'                       # alt screen, hide cursor
+  trap 'stty "$saved"; print -n "\e[?25h\e[?1049l"' EXIT INT TERM
+
+  while true; do
+    rows=("${(@f)$(collect)}")
+    [[ -z $rows[1] ]] && rows=()
+    (( cursor > ${#rows} )) && cursor=${#rows}
+    (( cursor < 1 )) && cursor=1
+
+    print -n '\e[H'                                 # home (no full clear = less flicker)
+    printf '\e[1m dev-servers\e[0m  \e[2m(%ss refresh)\e[0m\e[K\n\e[K\n' "$interval"
+    if (( ${#rows} == 0 )); then
+      printf '  no dev servers running\e[K\n'
+    else
+      for r in {1..${#rows}}; do
+        row=$rows[$r]
+        rpid=${row%%|*}; row=${row#*|}
+        mem=${row%%|*};  disp=${${row#*|}%|*}
+        mark='[ ]'; [[ -n ${selected[$rpid]} ]] && mark='[x]'
+        point='  '; (( r == cursor )) && point='> '
+        line=$(printf '%s%s %6sMB  %s' "$point" "$mark" "$mem" "$disp")
+        if (( r == cursor )); then printf '\e[7m%s\e[0m\e[K\n' "$line"
+        else                       printf '%s\e[K\n' "$line"; fi
+      done
+    fi
+    printf '\e[K\n \e[2m↑/↓ move · space select · a all · n none · x stop · r refresh · q quit\e[0m\e[K\n'
+    print -n '\e[J'                                 # clear anything below
+
+    if read -t $interval -k 1 k; then
+      case $k in
+        $'\e')                                      # escape / arrow
+          if read -t 1 -k 2 seq; then
+            case $seq in
+              '[A') (( cursor-- ));;
+              '[B') (( cursor++ ));;
+            esac
+          else break; fi                            # bare ESC quits
+          ;;
+        k|K) (( cursor-- ));;
+        j|J) (( cursor++ ));;
+        ' ')
+          (( ${#rows} )) || continue
+          rpid=${rows[$cursor]%%|*}
+          [[ -n ${selected[$rpid]} ]] && unset "selected[$rpid]" || selected[$rpid]=1
+          ;;
+        a|A) for row in $rows; do selected[${row%%|*}]=1; done;;
+        n|N) selected=();;
+        r|R) ;;                                     # loop re-collects
+        x|X|$'\n'|$'\r')
+          (( ${#rows} )) || continue
+          targets=()
+          if (( ${#selected} )); then
+            for row in $rows; do [[ -n ${selected[${row%%|*}]} ]] && targets+=("${row##*|}"); done
+          else
+            targets+=("${rows[$cursor]##*|}")
+          fi
+          (( ${#targets} )) || continue
+          printf '\e[K\n \e[1mForce-stop %d server(s)? [y/N]\e[0m ' ${#targets}
+          read -k 1 ans
+          if [[ $ans == (y|Y) ]]; then stop_pids "${targets[@]}"; selected=(); fi
+          ;;
+        q|Q) break;;
+      esac
+    fi
+  done
+
+  stty "$saved"; print -n '\e[?25h\e[?1049l'; trap - EXIT INT TERM
+}
+
+case ${1:-} in
+  -t|--tui|--watch) tui;;
+  -h|--help) print -- "usage: dev-servers [-t|--tui]";;
+  *) list;;
+esac

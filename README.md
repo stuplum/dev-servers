@@ -29,8 +29,25 @@ Vite/Storybook parent and its workers are counted together.
 
 ```
 dev-servers              # list running dev servers
+dev-servers -t           # live TUI: navigate, multi-select, force-stop
 DEV_ROOT=~/Workspace dev-servers   # narrow the search root (default: $HOME)
 ```
+
+### TUI (`-t`)
+
+A live, auto-refreshing view you can leave running. Pick one or many servers and
+force-stop them (the whole process subtree, `SIGTERM` then `SIGKILL`).
+
+```
+↑/↓ or j/k   move          space   select / deselect
+a            select all    n       clear selection
+x or enter   force-stop    r       refresh now
+q or esc     quit
+```
+
+Pressing `x` stops the selected servers, or the highlighted one if nothing is
+selected, after a `[y/N]` confirm. Refresh interval is 2s; override with
+`DEV_SERVERS_INTERVAL`. Zero dependencies — pure zsh.
 
 ## Install
 
@@ -47,7 +64,5 @@ Downloads the script to `~/.local/bin/dev-servers` (make sure that's on your
 
 ## Roadmap
 
-- **Continuous TUI** — a live-refreshing view you can leave running, with
-  pick-and-force-stop for one or many servers (kills the whole subtree). The
-  data the list already computes (subtree pids per server) is what a stop
-  action needs; the open work is the interactive, always-on interface.
+- Sort/filter controls in the TUI (by repo, by port).
+- Optionally show the command line, not just the process name.

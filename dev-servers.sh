@@ -81,21 +81,24 @@ stop_pids() {  # $@ = csv pid-lists; TERM, then KILL survivors
 }
 
 tui() {
-  if [[ ! -t 0 || ! -t 1 ]]; then
-    print -u2 "dev-servers -t needs an interactive terminal — run it in a terminal window."
-    return 1
-  fi
-
   # All variables declared once — re-declaring a set var with `local` echoes it.
   local interval=${DEV_SERVERS_INTERVAL:-2} saved k seq row rpid mem disp mark point line ans cols w
   local -a rows targets
   local -A selected
-  integer cursor=1 r last=-1000000 winch=1 dirty=1
+  integer cursor=1 r last=-1000000 winch=1 dirty=1 tty
 
-  saved=$(stty -g 2>/dev/null)
-  stty -echo -icanon 2>/dev/null
+  # Open the controlling terminal on a dedicated fd and drive BOTH raw-mode and
+  # key reads through it — zsh's `read -k` reads /dev/tty, so setting stty on
+  # fd 0 alone leaves reads in cooked mode (echoed keys) when they differ.
+  if ! exec {tty}<>/dev/tty; then
+    print -u2 "dev-servers -t needs a terminal — run it in a terminal window."
+    return 1
+  fi
+
+  saved=$(stty -g <&$tty 2>/dev/null)
+  stty -echo -icanon <&$tty 2>/dev/null
   print -n '\e[?1049h\e[?25l\e[?7l'                  # alt screen, hide cursor, no wrap
-  trap 'stty "$saved" 2>/dev/null; print -n "\e[?7h\e[?25h\e[?1049l"' EXIT
+  trap "stty \"\$saved\" <&$tty 2>/dev/null; print -n '\\e[?7h\\e[?25h\\e[?1049l'" EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'winch=1' WINCH                               # redraw on resize
@@ -111,7 +114,7 @@ tui() {
 
     if (( dirty )); then                            # redraw only when something changed
       dirty=0
-      cols=$(stty size 2>/dev/null)
+      cols=$(stty size <&$tty 2>/dev/null)
       cols=${cols##* }                             # last token = column count
       [[ $cols == <-> ]] || cols=80                # integer glob: fall back if junk
       (( cols < 20 )) && cols=80
@@ -139,11 +142,11 @@ tui() {
       print -n '\e[J'
     fi
 
-    read -t 1 -k 1 k || continue                    # 1s poll; keypress returns instantly
+    read -u $tty -t 1 -k 1 k || continue            # 1s poll; keypress returns instantly
     dirty=1
     case $k in
       $'\e')                                        # escape / arrow
-        if read -t 1 -k 2 seq; then
+        if read -u $tty -t 1 -k 2 seq; then
           case $seq in
             '[A') (( cursor-- ));;
             '[B') (( cursor++ ));;
@@ -171,7 +174,7 @@ tui() {
           fi
           if (( ${#targets} )); then
             printf '\e[K\n \e[1mForce-stop %d server(s)? [y/N]\e[0m ' ${#targets}
-            read -k 1 ans
+            read -u $tty -k 1 ans
             [[ $ans == (y|Y) ]] && { stop_pids "${targets[@]}"; selected=(); }
             last=-1000000                           # refresh after kill/confirm
           fi
@@ -181,7 +184,9 @@ tui() {
     esac
   done
 
-  stty "$saved" 2>/dev/null; print -n '\e[?7h\e[?25h\e[?1049l'; trap - EXIT INT TERM WINCH
+  stty "$saved" <&$tty 2>/dev/null; print -n '\e[?7h\e[?25h\e[?1049l'
+  trap - EXIT INT TERM WINCH
+  exec {tty}>&-                                      # close the terminal fd
 }
 
 case ${1:-} in

@@ -94,12 +94,13 @@ tui() {
   local interval=${DEV_SERVERS_INTERVAL:-2} saved k seq row rpid mem disp mark point line ans
   local -a rows targets
   local -A selected
-  integer cursor=1 r cols last=-1000000
+  integer cursor=1 r cols last=-1000000 winch=1
 
   saved=$(stty -g </dev/tty 2>/dev/null)
   stty -echo -icanon </dev/tty 2>/dev/null
   print -n '\e[?1049h\e[?25l\e[?7l'                  # alt screen, hide cursor, no wrap
   trap 'stty "$saved" </dev/tty 2>/dev/null; print -n "\e[?7h\e[?25h\e[?1049l"' EXIT INT TERM
+  trap 'winch=1' WINCH                               # redraw immediately on resize
 
   while true; do
     # Collect only on the timer or after a refresh/kill — never per keystroke,
@@ -109,7 +110,9 @@ tui() {
     fi
     (( cursor > ${#rows} )) && cursor=${#rows}
     (( cursor < 1 )) && cursor=1
-    cols=$(tput cols 2>/dev/null); [[ -z $cols || $cols -lt 20 ]] && cols=80
+    cols=$(stty size </dev/tty 2>/dev/null); cols=${cols##* }   # current width via ioctl
+    [[ -z $cols || $cols -lt 20 ]] && cols=80
+    (( winch )) && { winch=0; print -n '\e[2J'; }   # full clear after a resize
 
     print -n '\e[H'                                 # home (no full clear = less flicker)
     printf '\e[1m dev-servers\e[0m \e[2m(%ss)\e[0m\e[K\n\e[K\n' "$interval"
@@ -133,7 +136,7 @@ tui() {
     printf '\e[2m%s\e[0m\e[K\n' "${line[1,$cols]}"
     print -n '\e[J'                                 # clear anything below
 
-    if read -t $interval -k 1 k; then
+    if read -t 0.5 -k 1 k; then                     # poll fast; collect() is gated above
       case $k in
         $'\e')                                      # escape / arrow
           if read -t 0.3 -k 2 seq; then

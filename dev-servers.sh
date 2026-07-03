@@ -117,17 +117,20 @@ tui() {
     if (( SECONDS - last >= interval )); then
       rows=("${(@f)$(collect)}"); [[ -z $rows[1] ]] && rows=(); last=$SECONDS; dirty=1
     fi
-    (( winch )) && { winch=0; dirty=1; print -n '\e[2J'; }
-    (( cursor > ${#rows} )) && cursor=${#rows}
-    (( cursor < 1 )) && cursor=1
-
-    if (( dirty )); then                            # redraw only when something changed
-      dirty=0
+    if (( winch )); then                            # resize: re-measure width, full clear
+      winch=0; dirty=1
       cols=$(stty size <&$tty 2>/dev/null)
       cols=${cols##* }                             # last token = column count
       [[ $cols == <-> ]] || cols=80                # integer glob: fall back if junk
       (( cols < 20 )) && cols=80
       w=$(( cols - 1 ))                            # leave the last column untouched
+      print -n '\e[2J'
+    fi
+    (( cursor > ${#rows} )) && cursor=${#rows}
+    (( cursor < 1 )) && cursor=1
+
+    if (( dirty )); then                            # redraw only when something changed
+      dirty=0
       print -n '\e[H'
       printf '\e[1m dev-servers\e[0m \e[2m(%ss)\e[0m\e[K\n\e[K\n' "$interval"
       if (( ${#rows} == 0 )); then
@@ -139,7 +142,7 @@ tui() {
           mem=${row%%|*};  disp=${${row#*|}%|*}
           mark='[ ]'; [[ -n ${selected[$rpid]} ]] && mark='[x]'
           point='  '; (( r == cursor )) && point='> '
-          line=$(printf '%s%s %6sMB  %s' "$point" "$mark" "$mem" "$disp")
+          printf -v line '%s%s %6sMB  %s' "$point" "$mark" "$mem" "$disp"  # no subshell
           line=${line[1,$w]}                        # truncate so nothing wraps
           if (( r == cursor )); then printf '\e[7m%s\e[0m\e[K\n' "$line"
           else                       printf '%s\e[K\n' "$line"; fi

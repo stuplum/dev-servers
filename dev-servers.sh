@@ -87,6 +87,15 @@ tui() {
   local -A selected
   integer cursor=1 r last=-1000000 winch=1 dirty=1 tty
 
+  # The TUI is a persistent, self-refreshing, interactive program. If stdout is
+  # not a terminal it's being wrapped (e.g. `watch`) or piped, which swallows
+  # keystrokes and restarts it — refuse with a clear hint instead of misbehaving.
+  if [[ ! -t 1 ]]; then
+    print -u2 "dev-servers -t is an interactive TUI that refreshes itself — run it directly,"
+    print -u2 "not under 'watch' or a pipe. Just:  dev-servers -t"
+    return 1
+  fi
+
   # Open the controlling terminal on a dedicated fd and drive BOTH raw-mode and
   # key reads through it — zsh's `read -k` reads /dev/tty, so setting stty on
   # fd 0 alone leaves reads in cooked mode (echoed keys) when they differ.

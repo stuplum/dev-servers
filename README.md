@@ -45,9 +45,11 @@ x or enter   force-stop    r       refresh now
 q or esc     quit
 ```
 
-Pressing `x` stops the selected servers, or the highlighted one if nothing is
-selected, after a `[y/N]` confirm. Refresh interval is 2s; override with
-`DEV_SERVERS_INTERVAL`. Zero dependencies — pure zsh.
+Select the servers you want with `space` (or `a` for all), then `x` to
+force-stop them after a `[y/N]` confirm — `x` only ever touches the explicit
+selection. The list scrolls when it overflows and the legend stays pinned to
+the bottom. Refresh interval is 2s; override with `DEV_SERVERS_INTERVAL`. Zero
+dependencies — pure zsh.
 
 ## Install
 
@@ -57,6 +59,36 @@ curl -fsSL https://raw.githubusercontent.com/stuplum/dev-servers/main/install.sh
 
 Downloads the script to `~/.local/bin/dev-servers` (make sure that's on your
 `PATH`) and keeps `~/dev-servers.sh` working for backwards compatibility.
+
+## Wave Terminal widget
+
+[Wave Terminal](https://waveterm.dev) can launch the TUI from its widget bar.
+Add this to `~/.config/waveterm/widgets.json` (merge it in if the file already
+exists), then click the **dev servers** button:
+
+```json
+{
+  "dev-servers": {
+    "icon": "server",
+    "label": "dev servers",
+    "color": "#3fb950",
+    "display:order": 5,
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "cmd": "dev-servers -t",
+        "cmd:interactive": true,
+        "cmd:clearonstart": true
+      }
+    }
+  }
+}
+```
+
+`cmd:interactive` runs it through your login shell so `dev-servers` resolves on
+`PATH`; if it doesn't, use the absolute path (`~/.local/bin/dev-servers -t`).
+The snippet also lives in [`wave-widget.json`](wave-widget.json).
 
 ## Requirements
 

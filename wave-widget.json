@@ -1,0 +1,17 @@
+{
+  "dev-servers": {
+    "icon": "server",
+    "label": "dev servers",
+    "color": "#3fb950",
+    "display:order": 5,
+    "blockdef": {
+      "meta": {
+        "view": "term",
+        "controller": "cmd",
+        "cmd": "dev-servers -t",
+        "cmd:interactive": true,
+        "cmd:clearonstart": true
+      }
+    }
+  }
+}

@@ -85,7 +85,7 @@ tui() {
   local interval=${DEV_SERVERS_INTERVAL:-2} saved k seq row rpid mem disp mark point line ans cols w
   local -a rows targets
   local -A selected
-  integer cursor=1 r last=-1000000 winch=1 dirty=1 tty ln
+  integer cursor=1 r last=-1000000 winch=1 dirty=1 tty ln term_h top=1 vis slot i
 
   # The TUI is a persistent, self-refreshing, interactive program. If stdout is
   # not a terminal it's being wrapped (e.g. `watch`) or piped, which swallows
@@ -117,12 +117,15 @@ tui() {
     if (( SECONDS - last >= interval )); then
       rows=("${(@f)$(collect)}"); [[ -z $rows[1] ]] && rows=(); last=$SECONDS; dirty=1
     fi
-    if (( winch )); then                            # resize: re-measure width, full clear
+    if (( winch )); then                            # resize: re-measure, full clear
       winch=0; dirty=1
-      cols=$(stty size <&$tty 2>/dev/null)
+      cols=$(stty size <&$tty 2>/dev/null)         # "rows cols"
+      term_h=${cols%% *}                           # first token = row count
       cols=${cols##* }                             # last token = column count
       [[ $cols == <-> ]] || cols=80                # integer glob: fall back if junk
+      [[ $term_h == <-> ]] || term_h=24
       (( cols < 20 )) && cols=80
+      (( term_h < 6 )) && term_h=24
       w=$(( cols - 1 ))                            # leave the last column untouched
       print -n '\e[2J'
     fi
@@ -131,31 +134,39 @@ tui() {
 
     if (( dirty )); then                            # redraw only when something changed
       dirty=0
-      # Absolute cursor positioning per line (\e[row;1H) + clear-line (\e[K).
-      # Never relies on newline/autowrap/scroll behaviour, which varies by terminal.
-      ln=1
-      printf '\e[%d;1H\e[K\e[1m dev-servers\e[0m \e[2m(%ss)\e[0m' $ln "$interval"; (( ln++ ))
-      printf '\e[%d;1H\e[K' $ln; (( ln++ ))         # blank line
+      # Absolute positioning per line (\e[row;1H) + clear-line (\e[K); never relies
+      # on newline/autowrap/scroll behaviour, which varies by terminal. Rows live in
+      # a scrolling viewport between a fixed header (rows 1-2) and a sticky footer
+      # (last row), so the legend never scrolls away.
+      vis=$(( term_h - 4 )); (( vis < 1 )) && vis=1     # visible row slots
+      (( cursor < top )) && top=$cursor                # scroll up to reveal cursor
+      (( cursor > top + vis - 1 )) && top=$(( cursor - vis + 1 ))
+      (( top < 1 )) && top=1
+
+      printf '\e[1;1H\e[K\e[1m dev-servers\e[0m \e[2m(%ss · %d up · %d selected)\e[0m' \
+             "$interval" ${#rows} ${#selected}
+      printf '\e[2;1H\e[K'
       if (( ${#rows} == 0 )); then
-        printf '\e[%d;1H\e[K  no dev servers running' $ln; (( ln++ ))
+        printf '\e[3;1H\e[K  no dev servers running'
+        for (( slot=1; slot < vis; slot++ )); do printf '\e[%d;1H\e[K' $(( 3 + slot )); done
       else
-        for r in {1..${#rows}}; do
-          row=$rows[$r]
+        for (( slot=0; slot < vis; slot++ )); do
+          ln=$(( 3 + slot )); i=$(( top + slot ))
+          if (( i > ${#rows} )); then printf '\e[%d;1H\e[K' $ln; continue; fi
+          row=$rows[$i]
           rpid=${row%%|*}; row=${row#*|}
           mem=${row%%|*};  disp=${${row#*|}%|*}
           mark='[ ]'; [[ -n ${selected[$rpid]} ]] && mark='[x]'
-          point='  '; (( r == cursor )) && point='> '
+          point='  '; (( i == cursor )) && point='> '
           printf -v line '%s%s %6sMB  %s' "$point" "$mark" "$mem" "$disp"  # no subshell
           line=${line[1,$w]}                        # truncate so nothing wraps
-          if (( r == cursor )); then printf '\e[%d;1H\e[K\e[7m%s\e[0m' $ln "$line"
+          if (( i == cursor )); then printf '\e[%d;1H\e[K\e[7m%s\e[0m' $ln "$line"
           else                       printf '\e[%d;1H\e[K%s' $ln "$line"; fi
-          (( ln++ ))
         done
       fi
-      printf '\e[%d;1H\e[K' $ln; (( ln++ ))         # blank line
+      printf '\e[%d;1H\e[K' $(( term_h - 1 ))       # blank line above footer
       line=' ↑/↓ move · space select · a all · n none · x stop · r refresh · q quit'
-      printf '\e[%d;1H\e[K\e[2m%s\e[0m' $ln "${line[1,$w]}"
-      print -n '\e[J'                               # clear anything below the footer
+      printf '\e[%d;1H\e[K\e[2m%s\e[0m' $term_h "${line[1,$w]}"   # sticky footer
     fi
 
     read -u $tty -t 1 -k 1 k || continue            # 1s poll; keypress returns instantly
@@ -180,20 +191,14 @@ tui() {
       a|A) for row in $rows; do selected[${row%%|*}]=1; done;;
       n|N) selected=();;
       r|R) last=-1000000;;                          # force refresh next loop
-      x|X|$'\n'|$'\r')
-        if (( ${#rows} )); then
-          targets=()
-          if (( ${#selected} )); then
-            for row in $rows; do [[ -n ${selected[${row%%|*}]} ]] && targets+=("${row##*|}"); done
-          else
-            targets+=("${rows[$cursor]##*|}")
-          fi
-          if (( ${#targets} )); then
-            printf '\e[K\n \e[1mForce-stop %d server(s)? [y/N]\e[0m ' ${#targets}
-            read -u $tty -k 1 ans
-            [[ $ans == (y|Y) ]] && { stop_pids "${targets[@]}"; selected=(); }
-            last=-1000000                           # refresh after kill/confirm
-          fi
+      x|X|$'\n'|$'\r')                              # stop ONLY explicitly selected rows
+        targets=()
+        for row in $rows; do [[ -n ${selected[${row%%|*}]} ]] && targets+=("${row##*|}"); done
+        if (( ${#targets} )); then
+          printf '\e[%d;1H\e[K \e[1mForce-stop %d selected server(s)? [y/N]\e[0m ' $term_h ${#targets}
+          read -u $tty -k 1 ans
+          [[ $ans == (y|Y) ]] && { stop_pids "${targets[@]}"; selected=(); }
+          last=-1000000                             # refresh after kill/confirm
         fi
         ;;
       q|Q) break;;

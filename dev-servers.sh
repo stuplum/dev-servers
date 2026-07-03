@@ -85,7 +85,7 @@ tui() {
   local interval=${DEV_SERVERS_INTERVAL:-2} saved k seq row rpid mem disp mark point line ans cols w
   local -a rows targets
   local -A selected
-  integer cursor=1 r last=-1000000 winch=1 dirty=1 tty
+  integer cursor=1 r last=-1000000 winch=1 dirty=1 tty ln
 
   # The TUI is a persistent, self-refreshing, interactive program. If stdout is
   # not a terminal it's being wrapped (e.g. `watch`) or piped, which swallows
@@ -131,10 +131,13 @@ tui() {
 
     if (( dirty )); then                            # redraw only when something changed
       dirty=0
-      print -n '\e[H'
-      printf '\e[1m dev-servers\e[0m \e[2m(%ss)\e[0m\e[K\n\e[K\n' "$interval"
+      # Absolute cursor positioning per line (\e[row;1H) + clear-line (\e[K).
+      # Never relies on newline/autowrap/scroll behaviour, which varies by terminal.
+      ln=1
+      printf '\e[%d;1H\e[K\e[1m dev-servers\e[0m \e[2m(%ss)\e[0m' $ln "$interval"; (( ln++ ))
+      printf '\e[%d;1H\e[K' $ln; (( ln++ ))         # blank line
       if (( ${#rows} == 0 )); then
-        printf '  no dev servers running\e[K\n'
+        printf '\e[%d;1H\e[K  no dev servers running' $ln; (( ln++ ))
       else
         for r in {1..${#rows}}; do
           row=$rows[$r]
@@ -144,14 +147,15 @@ tui() {
           point='  '; (( r == cursor )) && point='> '
           printf -v line '%s%s %6sMB  %s' "$point" "$mark" "$mem" "$disp"  # no subshell
           line=${line[1,$w]}                        # truncate so nothing wraps
-          if (( r == cursor )); then printf '\e[7m%s\e[0m\e[K\n' "$line"
-          else                       printf '%s\e[K\n' "$line"; fi
+          if (( r == cursor )); then printf '\e[%d;1H\e[K\e[7m%s\e[0m' $ln "$line"
+          else                       printf '\e[%d;1H\e[K%s' $ln "$line"; fi
+          (( ln++ ))
         done
       fi
-      printf '\e[K\n'
+      printf '\e[%d;1H\e[K' $ln; (( ln++ ))         # blank line
       line=' ↑/↓ move · space select · a all · n none · x stop · r refresh · q quit'
-      printf '\e[2m%s\e[0m\e[K\n' "${line[1,$w]}"
-      print -n '\e[J'
+      printf '\e[%d;1H\e[K\e[2m%s\e[0m' $ln "${line[1,$w]}"
+      print -n '\e[J'                               # clear anything below the footer
     fi
 
     read -u $tty -t 1 -k 1 k || continue            # 1s poll; keypress returns instantly

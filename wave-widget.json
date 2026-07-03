@@ -8,8 +8,7 @@
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "cmd": "dev-servers -t",
-        "cmd:interactive": true,
+        "cmd": "zsh -ic 'dev-servers -t'",
         "cmd:clearonstart": true
       }
     }

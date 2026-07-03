@@ -77,8 +77,7 @@ exists), then click the **dev servers** button:
       "meta": {
         "view": "term",
         "controller": "cmd",
-        "cmd": "dev-servers -t",
-        "cmd:interactive": true,
+        "cmd": "zsh -ic 'dev-servers -t'",
         "cmd:clearonstart": true
       }
     }
@@ -86,9 +85,11 @@ exists), then click the **dev servers** button:
 }
 ```
 
-`cmd:interactive` runs it through your login shell so `dev-servers` resolves on
-`PATH`; if it doesn't, use the absolute path (`~/.local/bin/dev-servers -t`).
-The snippet also lives in [`wave-widget.json`](wave-widget.json).
+The `zsh -ic '…'` wrapper runs it through an interactive shell so `dev-servers`
+resolves on your `PATH` (Wave launches widget commands with a minimal GUI
+`PATH`). If your shell isn't zsh, swap it, or use the absolute install path
+(`~/.local/bin/dev-servers -t`). The snippet also lives in
+[`wave-widget.json`](wave-widget.json).
 
 ## Requirements
 

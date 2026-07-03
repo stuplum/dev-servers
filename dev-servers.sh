@@ -148,8 +148,8 @@ tui() {
       $'\e')                                        # escape / arrow
         if read -u $tty -t 1 -k 2 seq; then
           case $seq in
-            '[A') (( cursor-- ));;
-            '[B') (( cursor++ ));;
+            '[A'|'OA') (( cursor-- ));;             # up   (CSI or SS3/application mode)
+            '[B'|'OB') (( cursor++ ));;             # down
           esac
         else break; fi                              # bare ESC quits
         ;;
